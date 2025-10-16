@@ -1,4 +1,4 @@
-// Simple Express server to serve CSV data as JSON
+// Production-ready Express server to serve CSV data as JSON
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -15,14 +15,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001; // Use environment PORT for deployment
 
 // Configuration
 const CSV_FILE_PATH = path.join(__dirname, 'project_data_new.csv');
-const DOWNLOADS_FOLDER = "C:\\Users\\kmunusa1\\Downloads";
 
-// Enable CORS for React app
+// Enable CORS for all origins (you can restrict this later)
 app.use(cors());
+app.use(express.json());
 
 // Cache data in memory to avoid file locking issues
 let cachedData = null;
@@ -33,6 +33,7 @@ async function readCSVToCache() {
   const csvFilePath = CSV_FILE_PATH;
   
   if (!fs.existsSync(csvFilePath)) {
+    console.log('⚠️ CSV file not found at:', csvFilePath);
     return null;
   }
   
@@ -54,26 +55,42 @@ async function readCSVToCache() {
       .on('end', () => {
         cachedData = results;
         lastUpdate = new Date();
+        console.log(`✅ Loaded ${results.length} records into cache`);
         resolve(results);
       })
       .on('error', (error) => {
+        console.error('❌ Error reading CSV:', error);
         reject(error);
       });
   });
 }
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Project Dashboard API',
+    endpoints: {
+      projects: '/api/projects',
+      health: '/health',
+      manualRefresh: '/api/manual-refresh (POST)'
+    },
+    status: 'running'
+  });
+});
 
 // Endpoint to get project data from cache
 app.get('/api/projects', async (req, res) => {
   try {
     // If no cache, try to read from file
     if (!cachedData) {
+      console.log('📥 Cache empty, loading from CSV...');
       await readCSVToCache();
     }
     
     if (!cachedData || cachedData.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'No data available. Waiting for first update...'
+        error: 'No data available. CSV file may be empty or missing.'
       });
     }
     
@@ -82,75 +99,82 @@ app.get('/api/projects', async (req, res) => {
       data: cachedData,
       timestamp: new Date().toISOString(),
       lastUpdate: lastUpdate?.toISOString(),
-      source: 'CSV file (cached)'
+      source: 'CSV file (cached)',
+      records: cachedData.length
     });
   } catch (error) {
+    console.error('❌ Error fetching projects:', error);
     res.status(500).json({
       success: false,
       error: error.message
-    });  }
+    });
+  }
 });
 
 // Manual refresh endpoint - triggers Python script to download fresh data
 app.post('/api/manual-refresh', async (req, res) => {
   try {
     console.log('\n🔄 Manual refresh requested!');
-    console.log('=' .repeat(60));    // Step 1: Run Python script to download and process data
-    console.log('🐍 Running smart_auto.py in manual mode...');
+    console.log('='.repeat(60));
+    
     const pythonScriptPath = path.join(__dirname, 'backend', 'smart_auto.py');
     
+    // Check if Python script exists
+    if (!fs.existsSync(pythonScriptPath)) {
+      console.log('⚠️ Python script not found, reloading CSV only...');
+      await readCSVToCache();
+      
+      return res.json({
+        success: true,
+        message: 'Data reloaded from existing CSV',
+        records: cachedData?.length || 0,
+        timestamp: new Date().toISOString(),
+        note: 'Python script not available in production'
+      });
+    }
+    
+    // Step 1: Run Python script to download and process data
+    console.log('🐍 Running smart_auto.py in manual mode...');
+    
     try {
-      // Execute Python script with --manual flag for one-time execution
       const { stdout, stderr } = await execAsync(`python "${pythonScriptPath}" --manual`, {
-        timeout: 30000, // 30 second timeout
-        cwd: path.join(__dirname, 'backend') // Run from backend directory
+        timeout: 30000,
+        cwd: path.join(__dirname, 'backend')
       });
       
-      if (stdout) {
-        console.log('📋 Python script output:');
-        console.log(stdout);
-      }
-      if (stderr && stderr.length > 0) {
-        console.warn('⚠️ Python warnings:', stderr);
-      }
+      if (stdout) console.log('📋 Python output:', stdout);
+      if (stderr && stderr.length > 0) console.warn('⚠️ Python warnings:', stderr);
       
-      console.log('✅ Python script completed successfully');
+      console.log('✅ Python script completed');
     } catch (pythonError) {
       console.error('❌ Python script error:', pythonError.message);
-      // Check if CSV file was still updated despite error
+      
       if (!fs.existsSync(CSV_FILE_PATH)) {
-        throw new Error('Python script failed and no CSV file was generated');
+        throw new Error('Python script failed and no CSV file exists');
       }
-      console.log('⚠️ Continuing with existing CSV file...');
+      console.log('⚠️ Continuing with existing CSV...');
     }
     
-    // Step 2: Wait for file system to settle
-    console.log('⏳ Waiting for file system...');
+    // Step 2: Wait for file system
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // Step 3: Verify CSV file exists
-    if (!fs.existsSync(CSV_FILE_PATH)) {
-      throw new Error('CSV file not found after Python script execution');
-    }
-      const stats = fs.statSync(CSV_FILE_PATH);
-    console.log(`✅ Found CSV file: project_data_new.csv (${(stats.size / 1024).toFixed(2)} KB)`);
-      // Step 4: Reload cache from the CSV file (already processed by Python script)
+    // Step 3: Reload cache
     console.log('🔄 Reloading data cache...');
     await readCSVToCache();
     
-    console.log(`✅ Manual refresh complete! ${cachedData.length} records loaded`);
-    console.log('=' .repeat(60));
+    console.log(`✅ Manual refresh complete! ${cachedData?.length || 0} records loaded`);
+    console.log('='.repeat(60));
     
     res.json({
       success: true,
       message: 'Data refreshed successfully',
-      records: cachedData.length,
+      records: cachedData?.length || 0,
       timestamp: new Date().toISOString(),
       source: 'smart_auto.py'
     });
-      } catch (error) {
+      
+  } catch (error) {
     console.error('❌ Manual refresh failed:', error.message);
-    console.error('Full error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -165,34 +189,11 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    csvExists
+    csvExists,
+    cachedRecords: cachedData?.length || 0,
+    lastUpdate: lastUpdate?.toISOString() || 'Never'
   });
 });
-
-// Watch for CSV file changes and auto-reload (with debounce to prevent multiple reloads)
-// let reloadTimeout = null;
-// fs.watch(CSV_FILE_PATH, async (eventType, filename) => {
-//   if (eventType === 'change') {
-//     // Clear any existing timeout
-//     if (reloadTimeout) {
-//       clearTimeout(reloadTimeout);
-//     }
-    
-//     // Set a new timeout - only reload after 1 second of no changes
-//     reloadTimeout = setTimeout(async () => {
-//       console.log(`\n📥 CSV file changed! Reloading data... (${new Date().toLocaleTimeString()})`);
-//       try {
-//         await readCSVToCache();
-//         if (cachedData && cachedData.length > 0) {
-//           console.log(`✅ Reloaded ${cachedData.length} records\n`);
-//         }
-//       } catch (error) {
-//         console.log(`⚠️ Error reloading CSV: ${error.message}\n`);
-//       }
-//       reloadTimeout = null;
-//     }, 1000); // Wait 1 second after last change
-//   }
-// });
 
 // Start server
 app.listen(PORT, async () => {
@@ -202,6 +203,7 @@ app.listen(PORT, async () => {
   console.log(`Server: http://localhost:${PORT}`);
   console.log(`API Endpoint: http://localhost:${PORT}/api/projects`);
   console.log(`Health Check: http://localhost:${PORT}/health`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log('='.repeat(60));
   
   // Load existing CSV file
@@ -209,15 +211,11 @@ app.listen(PORT, async () => {
   try {
     await readCSVToCache();
     if (cachedData && cachedData.length > 0) {
-      console.log(`✅ Loaded ${cachedData.length} records from CSV file`);
-      console.log('✅ Server is ready and serving data!\n');
+      console.log(`✅ Server ready with ${cachedData.length} records!\n`);
     } else {
-      console.log('⚠️ CSV file is empty');
+      console.log('⚠️ CSV file is empty or not found\n');
     }
   } catch (error) {
-    console.log('⚠️ No CSV file found');
+    console.log('⚠️ Could not load CSV file:', error.message, '\n');
   }
-  
-  console.log(' Watching for CSV file changes...');
-  console.log('💡 CSV updates are handled by smart_auto.py\n');
 });
