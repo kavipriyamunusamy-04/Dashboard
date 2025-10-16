@@ -3,11 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-<<<<<<< HEAD
   "homepage": "https://kavipriyamunusamy-04.github.io/Dashboard/",
-=======
-   "homepage": "https://kavipriyamunusamy-04.github.io/Dashboard/",
->>>>>>> f4a5762b9ef045e90c5231f5610a074343d9b678
   "scripts": {
     "dev": "vite",
     "build": "vite build",
