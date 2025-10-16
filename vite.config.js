@@ -3,5 +3,5 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: '/Dashboard/'   // ✅ important for GitHub Pages
+  base: '/Dashboard/', // Replace 'Dashboard' with your actual repo name
 })
